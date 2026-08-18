@@ -1,36 +1,107 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Future Oracle: Crypto Forecasts
 
-## Getting Started
+Прототип «предсказателя будущего» для криптовалютного рынка.  
+Система собирает реальные данные из двух открытых источников — CoinGecko (цены и рыночные показатели) и RSS-ленты новостей (CoinDesk, Cointelegraph) — и на основе простого алгоритма строит прогноз направления движения цены для топовых криптовалют.
 
-First, run the development server:
+## Как запустить
 
 ```bash
+npm install
+npx prisma db push
+npx prisma generate
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+После запуска откройте http://localhost:3000.
+При первом открытии главной страницы данные автоматически соберутся из источников, после чего будут рассчитаны прогнозы.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Тема и источники данных
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Тема: криптовалютные прогнозы.
+- Источник 1: CoinGecko API — рыночные данные по топ-10 монетам (цена, капитализация, объём, изменения за 24ч/7д/30д).
+- Источник 2: RSS-ленты новостей — CoinDesk RSS и Cointelegraph RSS.
 
-## Learn More
+Данные собираются сервером при первом обращении к странице или при вызове `/api/fetch-data`.
 
-To learn more about Next.js, take a look at the following resources:
+## Хранение данных (SQLite + Prisma)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Используется SQLite через Prisma ORM. Модели:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Asset — нормализованные показатели криптовалют (символ, название, цена, изменения, объёмы).
+- NewsItem — сырые записи новостей (заголовок, ссылка, дата, источник, привязка к активу).
+- Prediction — рассчитанные прогнозы (направление, уверенность, риск, score, аргументы).
+- DataSource — информация об источниках данных и времени последнего обновления.
+- UpdateLog — история обновлений: что, когда и сколько записей было добавлено/обновлено.
 
-## Deploy on Vercel
+## Алгоритм прогноза
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Для каждой монеты рассчитывается итоговый скор как сумма двух компонентов:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Ценовой скор (priceScore)
+   `priceScore = (change24h * 0.5 + change7d * 0.3 + change30d * 0.2) / 5`
+   Веса подобраны так, чтобы свежие изменения (24ч) влияли сильнее.
+
+2. Сентимент-скор новостей (newsScore)
+   Для каждой новости, привязанной к монете, вычисляется тональность с помощью словарного анализа: список позитивных и негативных слов (например, "bull", "surge", "partnership" — позитив; "crash", "ban", "hack" — негатив).
+   Средняя тональность нормируется от -1 до 1 и умножается на 5, чтобы привести к масштабу ценового скора.
+
+Итоговый скор: score = priceScore + newsScore.
+
+Направление прогноза:
+
+- `score > 1.5 → рост (up)`
+- `score < -1.5 → падение (down)`
+- `иначе — нейтрально (neutral)`
+
+Уверенность:
+`confidence = min(1, |score| / 8)`. Чем сильнее сигнал, тем выше уверенность.
+
+Риск:
+
+- Рассчитывается волатильность: volatility = max(|change24h|, |change7d|).
+- Проверяется противоречие между направлениями ценового и новостного сигналов.
+- Базовая оценка:
+  `volatility > 8` или есть конфликт сигналов → `high`
+  `volatility > 3 → medium`
+  иначе → `low`
+
+- Учитывается уверенность:
+  если `confidence < 0.2` → риск повышается до `high`
+  если `confidence < 0.5` и риск был `low` → повышается до `medium`
+
+Все расчеты выполняются на основе данных из базы, никакой случайности нет.
+
+Как проверить, что цифры сходятся
+
+1. Откройте главную страницу, посмотрите на карточку монеты.
+2. В карточке отображаются: - изменения цены за 24ч, 7д; - количество новостей в анализе; - количество позитивных/негативных новостей; - итоговый score, уверенность, риск.
+
+3. Сравните эти значения с расчётом по формулам выше.
+   Например, для XRP с изменением 24ч = -0.30%, новостями 2 негативными: - `priceScore = (-0.30 * 0.5) / 5 = -0.03` - `newsScore = (-1.0) * 5 = -5.0` (все новости негативные) - `score = -5.03` - направление `down`, уверенность `|score| / 8 ≈ 0.63`, риск `low` (волатильность < 3, сигналы согласованы).
+   Всё сходится.
+
+4. Можно также открыть Prisma Studio (npx prisma studio) и убедиться, что в таблицах хранятся исходные данные, на основе которых рассчитан прогноз.
+
+## Скриншоты
+
+https://screenshots/main.png
+
+## Использование AI
+
+В процессе разработки активно использовался AI-ассистент DeepSeek для ускорения написания кода, генерации шаблонов, отладки и подбора формул.
+Вся логика при этом проверялась и корректировалась вручную.
+В рантайме приложение не использует внешние LLM API: анализ тональности новостей выполняется простым словарным алгоритмом, что обеспечивает полную автономность и отсутствие зависимости от внешних сервисов.
+
+## Дисклеймер
+
+Этот прототип создан исключительно в демонстрационных целях.
+Прогнозы не являются инвестиционной рекомендацией.
+Никакие реальные деньги не используются и не подключаются.
+
+## Возможные улучшения
+
+- Подключить LLM API для более точного анализа тональности новостей (например, Google Gemini бесплатный тариф).
+- Добавить больше источников данных (биржевые объёмы, on-chain метрики, Polymarket).
+- Реализовать backtesting для оценки точности прогнозов.
+- Добавить автоматическое обновление страницы без перезагрузки (WebSocket/SSE).
+- Визуализировать историю прогнозов и обновлений.
