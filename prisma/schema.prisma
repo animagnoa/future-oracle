@@ -1,13 +1,62 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
+// prisma/schema.prisma
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Asset {
+  id             String       @id @default(cuid())
+  symbol         String       @unique
+  name           String
+  currentPrice   Float?
+  marketCap      Float?
+  volume24h      Float?
+  priceChange24h Float?
+  priceChange7d  Float?
+  priceChange30d Float?
+  updatedAt      DateTime     @updatedAt
+  predictions    Prediction[]
+  newsItems      NewsItem[]
+}
+
+model NewsItem {
+  id        String   @id @default(cuid())
+  title     String
+  link      String
+  pubDate   DateTime
+  source    String   // "CoinDesk", "Cointelegraph"...
+  assetId   String?
+  asset     Asset?   @relation(fields: [assetId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model Prediction {
+  id         String   @id @default(cuid())
+  assetId    String
+  asset      Asset    @relation(fields: [assetId], references: [id])
+  direction  String   // "up", "down", "neutral"
+  confidence Float    // 0..1
+  risk       String   // "low", "medium", "high"
+  score      Float
+  reasoning  String   // JSON string with arguments
+  createdAt  DateTime @default(now())
+}
+
+model DataSource {
+  id            String   @id @default(cuid())
+  name          String   // "CoinGecko", "CoinDesk RSS"
+  type          String   // "api", "rss"
+  lastFetchedAt DateTime?
+}
+
+model UpdateLog {
+  id        String   @id @default(cuid())
+  type      String   // "crypto" или "news"
+  items     Int      // сколько записей добавлено/обновлено
+  details   String?  // доп. информация, например JSON
+  createdAt DateTime @default(now())
 }

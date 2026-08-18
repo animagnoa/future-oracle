@@ -1,69 +1,155 @@
-import Image from "next/image";
+import { prisma } from "@/lib/prisma";
+import { fetchCryptoData } from "@/lib/coingecko";
+import { fetchNews } from "@/lib/news";
+import { calculatePredictions } from "@/lib/scoring";
 
-export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+export const dynamic = "force-dynamic";
+
+async function ensureData() {
+  const assetCount = await prisma.asset.count();
+  const predictionCount = await prisma.prediction.count();
+  const lastFetch = await prisma.dataSource.findFirst({
+    where: { id: "coingecko" },
+  });
+
+  // Обновляем данные, если активов нет или прошло больше 10 минут
+  const shouldFetch =
+    assetCount === 0 ||
+    !lastFetch?.lastFetchedAt ||
+    Date.now() - lastFetch.lastFetchedAt.getTime() > 1 * 60 * 1000;
+
+  if (shouldFetch) {
+    await fetchCryptoData();
+    await fetchNews();
+  }
+
+  // Пересоздаём прогнозы, если их нет или данные обновились
+  if (predictionCount === 0 || shouldFetch) {
+    await calculatePredictions();
+  }
+}
+
+export default async function Home() {
+  await ensureData();
+
+  const assets = await prisma.asset.findMany({
+    include: {
+      predictions: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
+    },
+    orderBy: { marketCap: "desc" },
+  });
+
+  if (assets.length === 0) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-8">
+        <div className="text-center">
+          <h1 className="text-2xl font-bold mb-4">Нет данных</h1>
+          <p className="text-slate-300">
+            Не удалось загрузить данные. Попробуйте позже.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
       </main>
-    </div>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10">
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-bold mb-2">
+          Future Oracle: Crypto Forecasts
+        </h1>
+        <p className="text-slate-400 mb-8">
+          Прогнозы на основе цен CoinGecko и новостей RSS (CoinDesk,
+          Cointelegraph)
+        </p>
+
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {assets.map((asset) => {
+            const prediction = asset.predictions[0];
+            if (!prediction) return null;
+
+            const reasoning = JSON.parse(prediction.reasoning);
+
+            return (
+              <div
+                key={asset.id}
+                className="bg-slate-900 rounded-2xl border border-slate-800 p-5 shadow hover:border-slate-700 transition"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h2 className="text-xl font-semibold">
+                      {asset.name}{" "}
+                      <span className="text-slate-400 text-sm">
+                        ({asset.symbol})
+                      </span>
+                    </h2>
+                    <p className="text-slate-400 text-sm">
+                      ${asset.currentPrice?.toLocaleString() ?? "—"}
+                    </p>
+                  </div>
+                  <span
+                    className={`text-2xl font-bold ${
+                      prediction.direction === "up"
+                        ? "text-emerald-400"
+                        : prediction.direction === "down"
+                          ? "text-red-400"
+                          : "text-slate-400"
+                    }`}
+                  >
+                    {prediction.direction === "up"
+                      ? "↗"
+                      : prediction.direction === "down"
+                        ? "↘"
+                        : "→"}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-sm text-slate-300">
+                    {prediction.direction === "up"
+                      ? "Прогноз: рост"
+                      : prediction.direction === "down"
+                        ? "Прогноз: падение"
+                        : "Нейтрально"}
+                  </span>
+                  <span className="text-xs bg-slate-800 px-2 py-0.5 rounded">
+                    Уверенность: {Math.round(prediction.confidence * 100)}%
+                  </span>
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      prediction.risk === "high"
+                        ? "bg-red-500/20 text-red-300"
+                        : prediction.risk === "medium"
+                          ? "bg-yellow-500/20 text-yellow-300"
+                          : "bg-emerald-500/20 text-emerald-300"
+                    }`}
+                  >
+                    Риск: {prediction.risk}
+                  </span>
+                </div>
+
+                <div className="text-xs text-slate-400 space-y-1">
+                  <p>Score: {prediction.score}</p>
+                  <p>
+                    Изменение за 24ч: {reasoning.priceChange24h?.toFixed(2)}%
+                  </p>
+                  <p>Изменение за 7д: {reasoning.priceChange7d?.toFixed(2)}%</p>
+                  <p>Новостей в анализе: {reasoning.newsCount}</p>
+                  {reasoning.newsCount > 0 && (
+                    <p>
+                      Позитивных: {reasoning.positiveNews}, негативных:{" "}
+                      {reasoning.negativeNews}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </main>
   );
 }
