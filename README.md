@@ -84,7 +84,7 @@ npm run dev
 
 ## Скриншоты
 
-https://screenshots/main.png
+![Главная страница с прогнозами](screenshots/main.png)
 
 ## Использование AI
 
